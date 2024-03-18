@@ -23,7 +23,7 @@ class hittable {
         virtual ~hittable() = default;
 
         // given ray r, tmin, tmax, return true if hit and record hit info in rec. Return false if not hit.
-        virtual bool hit(const ray& r, double ray_tmin, double ray_tmax, hit_record& rec) const = 0;
+        virtual bool hit(const ray& r, interval ray_t, hit_record& rec) const = 0;
 };
 
 #endif
