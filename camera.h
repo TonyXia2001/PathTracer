@@ -4,12 +4,22 @@
 
 #include "color.h"
 #include "hittable.h"
+#include "material.h"
 
 class camera {
     public:
         double  aspect_ratio      = 1.0;
         int     image_width       = 100;
         int     samples_per_pixel = 10;
+        int     max_depth         = 10;
+        
+        double  vfov              = 90; // vertical FOV
+        point3  lookfrom          = point3(0, 0, -1);
+        point3  lookat            = point3(0, 0, 0);
+        vec3    vup               = vec3(0, 1, 0);
+        
+        double  defocus_angle     = 0;  // Variation angle of rays through each pixel
+        double  focus_dist        = 10;    // Distance from camera lookfrom point to plane of perfect focus
 
         void render(const hittable& world) {
             initialize();
@@ -22,7 +32,7 @@ class camera {
                     color pixel_color(0,0,0);
                     for (int k = 0; k < samples_per_pixel; k++) {
                         ray r = get_ray(i, j);
-                        pixel_color += ray_color(r, world);
+                        pixel_color += ray_color(r, max_depth, world);
                     }
                     write_color(std::cout, pixel_color, samples_per_pixel);
                 }
@@ -37,29 +47,41 @@ class camera {
         point3  pixel00_loc;    // location of pixel 0, 0
         vec3    pixel_delta_u;  // width of each pixel
         vec3    pixel_delta_v;  // height of each pixel
+        vec3    u, v, w;
+        vec3    defocus_disk_u;
+        vec3    defocus_disk_v;
 
         void initialize() {
             image_height = static_cast<int> (image_width / aspect_ratio);
             image_height = std::max(image_height, 1);
-            center = point3(0,0,0);
+            center = lookfrom;
 
             // viewport
-            double focal_length = 1.0;
-            double viewport_height = 2.0;
+            double theta = degrees_to_radians(vfov);
+            double viewport_height = tan(theta/2) * focus_dist * 2;
             double viewport_width = viewport_height * (static_cast<double>(image_width)/image_height);
-            vec3 viewport_u = vec3(viewport_width, 0, 0);
-            vec3 viewport_v = vec3(0, -viewport_height, 0);
+
+            w = unit_vector(lookfrom - lookat);
+            u = unit_vector(cross(vup, w));
+            v = cross(w, u);
+
+            vec3 viewport_u = viewport_width * u;
+            vec3 viewport_v = viewport_height * -v;
             pixel_delta_u = viewport_u / image_width;
             pixel_delta_v = viewport_v / image_height;
 
-            point3 viewport_upper_left = center - vec3(0, 0, focal_length) - viewport_u/2 - viewport_v/2;
+            point3 viewport_upper_left = center - focus_dist * w - viewport_u/2 - viewport_v/2;
             pixel00_loc = viewport_upper_left + 0.5 * (pixel_delta_u + pixel_delta_v);
+
+            auto defocus_radius = focus_dist * tan(degrees_to_radians(defocus_angle) / 2);
+            defocus_disk_u = defocus_radius * u;
+            defocus_disk_v = defocus_radius * v;
         }
 
         ray get_ray(int i, int j) const {
             auto pixel_center = pixel00_loc + (i * pixel_delta_u) + (j * pixel_delta_v);
             auto pixel_sample = pixel_center + pixel_sample_square();
-            auto ray_origin = center;
+            auto ray_origin = (defocus_angle <= 0) ? center : defocus_disk_sample();
             auto ray_direction = pixel_sample - ray_origin;
 
             return ray(ray_origin, ray_direction);
@@ -71,10 +93,24 @@ class camera {
             return (px * pixel_delta_u) + (py * pixel_delta_v);
         }
 
-        color ray_color(const ray& r, const hittable& world) const {
+        point3 defocus_disk_sample() const {
+            // Returns a random point in the camera defocus disk.
+            auto p = random_in_unit_disk();
+            return center + (p[0] * defocus_disk_u) + (p[1] * defocus_disk_v);
+        }
+
+        color ray_color(const ray& r, int depth, const hittable& world) const {
+            if (depth <= 0) return color(0,0,0);
             hit_record rec;
-            if (world.hit(r, interval(0, infinity), rec)) {
-                return 0.5 * (rec.normal + color(1, 1, 1));
+            // interval min is set to 0.001 in case the ray's starting point is below the surface due to rounding errors
+            // shadow acne
+            if (world.hit(r, interval(0.001, infinity), rec)) {
+                ray scattered;
+                color attenuation;
+                if (rec.mat->scatter(r, rec, attenuation, scattered)) {
+                    return attenuation * ray_color(scattered, depth-1, world);
+                }
+                return color(0,0,0);
             }
 
             vec3 unit_direction = unit_vector(r.direction());
